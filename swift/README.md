@@ -122,6 +122,86 @@ let renderer = ReceiptRenderer(width: 384, ditherMode: .floydSteinberg)
 printer.print(try renderer.bitmap(from: myImage))
 ```
 
+### One-shot CLI transport contract (repair fork)
+
+The `d-schmitt/PocketPrinter5890` fork carries focused transport repairs.
+Pin its reviewed **full commit SHA**, not a moving branch, when consuming it
+as a Swift Package. It retains the upstream MIT license and attribution.
+
+```swift
+// Run on the main actor, with a running main run loop.
+let transport = PocketPrinter5890BLE(fileLoggingEnabled: false)
+
+// After scanning, connecting, and observing connectionState == .ready:
+let segments = PrintJobBuilder.segments(
+    bitmap: bitmap,
+    options: PrintOptions(width: .mm58, bandHeight: 24)
+)
+transport.send(segments) // One atomic enqueue, preserving segment boundaries.
+```
+
+Observe `$connectionState` and `$writeState` with Combine, or read their typed
+values on the main actor. Keep subscriptions alive. When acting on a Combine
+event, use its emitted value (`@Published` emits before the property is set);
+`.receive(on: DispatchQueue.main)` also avoids acting inside a property setter.
+Install observers before connecting/sending. Retain a client-side job flag so
+an unrelated battery-query drain cannot be mistaken for your submitted job.
+
+| API | Meaning |
+|---|---|
+| `connectionState` | `.disconnected`, `.connecting`, `.discovering`, `.subscribing`, `.ready`, `.disconnecting`, or `.failed(BLETransportError)` |
+| `.ready` / `isConnected == true` | Write characteristic found and every required subscription confirmed. FF00 requires **both FF01 and FF03**. No fixed sleep is needed. |
+| `writeState == .idle` | No work submitted in this connection yet. Not job completion. |
+| `.pending(remainingBytes:awaitingResponse:)` | Queued bytes remain, or a CoreBluetooth write-with-response callback is outstanding. Zero remaining bytes with `awaitingResponse == true` is still pending. |
+| `.drained` | All accepted bytes have been handed to CoreBluetooth; required write-with-response callbacks have succeeded. **Not confirmation of physical printing**, firmware receipt, or motor completion. |
+| `.cancelled` / `.failed(error)` | Work was discarded, not drained. Disconnect immediately cancels the queue and response contexts. No automatic replay occurs after reconnect. |
+| `sendProgress` | Fraction handed to CoreBluetooth. Not a job completion gate. |
+| `printerStatus` | Last solicited, one-byte paper-status reply, decoded as `PrinterStatus`. `nil` until known; reset on disconnect. Credits never populate it. Raw flag meanings remain inherited device-family interpretations, not verified job completion signals. |
+| `fileLoggingEnabled: false` | No creation or append of `~/Library/Logs/PocketPrinter5890App/ble.log`. Existing files remain; the in-memory `log` is retained. Default `init()` preserves file logging. |
+
+`BLETransportError` distinguishes `notReady`, `bluetoothUnavailable`,
+`connectionFailed(String)`, `discoveryFailed(String)`,
+`notificationFailed(characteristic:message:)`, `writeFailed(String)`, and
+`disconnected`. Subscription loss, notification read errors, and write errors
+cancel the connection and remaining writes. Wait for disconnection to finish
+before reconnecting; an in-progress disconnect is not a reconnect opportunity.
+Use a client-side deadline and call `disconnect()` on timeout.
+
+Use `send([PrintSegment])` for the whole job. Repeated single-command `send`
+calls remain compatible, but each may drain separately. Empty input is a no-op.
+Nonempty sends before readiness are rejected with `.failed(.notReady)`, not
+buffered for later. Pass complete commands or complete builder raster segments,
+not already-chunked fragments or flattened jobs: the activation and twelve
+wake-up bytes must remain separate writes. Raster classification happens once
+from the `1D 76 30` command prefix and persists across BLE chunks, including a
+56-byte one-row raster and short tails. Other payloads over 64 bytes retain the
+historical bulk credit guard. Short configuration writes neither wait for nor
+spend raster credits. Keep `useCreditFlowControl` enabled and
+`interPacketDelay` at zero. `AA 0D 0A` is unsolicited noise, never completion.
+
+The existing battery polling remains enabled and skips a busy queue. Received
+device/paper status is informational; unknown state is not proof of readiness
+or of an empty paper roll.
+
+These repairs do not grant Bluetooth permissions. The responsible macOS host
+must provide the required Bluetooth usage description and TCC consent.
+An app-origin CLI can be blocked by its host's packaging even when the CLI
+embeds its own usage description. Validate hardware separately in an approved
+host; the checks below do not initialize CoreBluetooth.
+
+From the repository root, run `swift build` and
+`swift run BLETransportChecks`. The latter is a dependency-free executable
+regression suite for the state used by the actual transport: raster credits,
+separate activation writes, atomic enqueue/drain, notifications, cancellation,
+stale callbacks, and solicited status. It works with Command Line Tools alone.
+Run `sh swift/Tests/AdapterChecks/run.sh` to additionally compile the actual
+adapter against inert Bluetooth doubles and real Combine. This checks
+synchronous-observer cancellation, adapter readiness/credit/status wiring,
+and published write-with-response transitions without loading Apple's
+CoreBluetooth framework or attempting a connection.
+The existing XCTest suite remains under `swift/`; run
+`swift test --package-path swift` when Xcode's XCTest runtime is available.
+
 ## Protocol
 
 ### Activation sequence, mandatory
