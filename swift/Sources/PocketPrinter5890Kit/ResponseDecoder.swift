@@ -1,7 +1,15 @@
 import Foundation
 
 public enum ResponseDecoder {
+    /// Only a solicited one-byte paper reply has an unambiguous status value.
+    /// Credit frames and the unsolicited service terminator are never status.
+    public static func printerStatus(_ bytes: [UInt8], isPaperResponse: Bool) -> PrinterStatus? {
+        guard isPaperResponse, bytes.count == 1, let raw = bytes.first else { return nil }
+        return PrinterStatus(raw: raw)
+    }
+
     public static func decode(_ bytes: [UInt8], context: String?) -> String {
+        if bytes == [0xaa, 0x0d, 0x0a] { return "" }
         let context = context?.lowercased() ?? ""
 
         // Acquittement ASCII observe sur FF01 apres une commande proprietaire
@@ -77,6 +85,7 @@ public enum ResponseDecoder {
     }
 
     public static func looksLikeSolicitedResponse(_ bytes: [UInt8], context: String?) -> Bool {
+        if bytes == [0xaa, 0x0d, 0x0a] { return false }
         guard let context = context?.lowercased() else { return false }
 
         // Une trame `01 nn` est un credit de flux emis en continu pendant les

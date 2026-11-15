@@ -36,6 +36,11 @@ let package = Package(
             name: "PocketPrinter5890BLE",
             dependencies: ["PocketPrinter5890Kit"],
             path: "swift/Sources/PocketPrinter5890BLE"
+        ),
+        .executableTarget(
+            name: "BLETransportChecks",
+            dependencies: ["PocketPrinter5890Kit", "PocketPrinter5890BLE"],
+            path: "swift/Tests/BLETransportChecks"
         )
     ]
 )
